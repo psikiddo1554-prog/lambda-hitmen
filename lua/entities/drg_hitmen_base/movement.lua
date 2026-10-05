@@ -19,17 +19,154 @@ ENT.Deceleration = 10000
 
 ENT.PowerRunAnimRate = 1.25
 
+function ENT:InitializeHitmenAnimationSpeeds()
+    if self._HitmenAnimationBaseSpeeds then
+        return self._HitmenAnimationBaseSpeeds
+    end
+
+    local walkSpeed = tonumber(self.WalkSpeed) or 175
+    local runSpeed = tonumber(self.RunSpeed) or 350
+    local powerSpeed = tonumber(self.PowerSpeed) or runSpeed
+
+    if walkSpeed <= 0 then walkSpeed = 1 end
+    if runSpeed <= 0 then runSpeed = 1 end
+    if powerSpeed <= 0 then powerSpeed = runSpeed end
+
+    self._HitmenAnimationBaseSpeeds = {
+        walk = walkSpeed,
+        run = runSpeed,
+        power = powerSpeed
+    }
+
+    return self._HitmenAnimationBaseSpeeds
+end
+
+ENT.AnimationSpeedSensitivity = 0.65
+
+function ENT:GetHitmenAnimationRate(rate, currentSpeed, referenceSpeed)
+    rate = tonumber(rate) or 1
+    currentSpeed = tonumber(currentSpeed)
+    referenceSpeed = tonumber(referenceSpeed)
+
+    if currentSpeed == nil
+        or referenceSpeed == nil
+        or referenceSpeed <= 0 then
+        return rate
+    end
+
+    local sensitivity = math.Clamp(
+        tonumber(self.AnimationSpeedSensitivity) or 0.65,
+        0,
+        1
+    )
+
+    local speedRatio = math.max(currentSpeed, 0) / referenceSpeed
+
+    local adjustedRatio = 1
+        + (speedRatio - 1) * sensitivity
+
+    return rate * math.max(adjustedRatio, 0)
+end
+
+function ENT:GetHitmenPowerRunAnimationRate()
+    local base = self:InitializeHitmenAnimationSpeeds()
+
+    local meter = isfunction(self.GetPMeter)
+        and self:GetPMeter()
+        or 0
+
+    local meterMax = math.max(
+        tonumber(self.PMeterMax) or 100,
+        1
+    )
+
+    local fraction = math.Clamp(meter / meterMax, 0, 1)
+
+    local referenceSpeed = Lerp(
+        fraction,
+        base.run,
+        base.power
+    )
+
+    local currentSpeed = isfunction(self.GetPMeterSpeed)
+        and self:GetPMeterSpeed()
+        or self.RunSpeed
+
+    return self:GetHitmenAnimationRate(
+        self.PowerRunAnimRate or 1.25,
+        currentSpeed,
+        referenceSpeed
+    )
+end
+
+function ENT:OnUpdateAnimation()
+    if self:IsDown() or self:IsDead() then
+        return
+    end
+
+    if self:IsClimbingUp() then
+        return self.ClimbUpAnimation, self.ClimbAnimRate
+    elseif self:IsClimbingDown() then
+        return self.ClimbDownAnimation, self.ClimbAnimRate
+    elseif not self:IsOnGround() then
+        return self.JumpAnimation, self.JumpAnimRate
+    end
+
+    local base = self:InitializeHitmenAnimationSpeeds()
+
+    if self:IsMoving() then
+        if self:IsSlowWalking() then
+            return self.WalkAnimation,
+                self:GetHitmenAnimationRate(
+                    self.WalkAnimRate,
+                    self.WalkSpeed,
+                    base.walk
+                )
+        end
+
+        return self.RunAnimation,
+            self:GetHitmenAnimationRate(
+                self.RunAnimRate,
+                self.RunSpeed,
+                base.run
+            )
+    end
+
+    return self.IdleAnimation, self.IdleAnimRate
+end
+
+function ENT:SetMovementEnabled(enabled)
+    self._HitmenMovementEnabled = enabled == true
+
+    if not self._HitmenMovementEnabled and self.loco then
+        local velocity = self:GetVelocity()
+
+        self.loco:SetVelocity(Vector(0, 0, velocity.z))
+    end
+end
+
+function ENT:GetMovementEnabled()
+    return self._HitmenMovementEnabled ~= false
+end
+
 function ENT:InitializePMeter()
     self._PMeter = 0
     self._PMeterLastUpdate = CurTime()
     self._SlowWalking = false
 
     local forward = self:GetForward()
-    self._PMeterDirection = Vector(forward.x, forward.y, 0)
+
+    self._PMeterDirection = Vector(
+        forward.x,
+        forward.y,
+        0
+    )
 
     if not self._PMeterDirection:IsZero() then
         self._PMeterDirection:Normalize()
     end
+
+    self:InitializeHitmenAnimationSpeeds()
 end
 
 function ENT:IsSlowWalking()
@@ -41,7 +178,11 @@ function ENT:GetPMeter()
 end
 
 function ENT:SetPMeter(value)
-    self._PMeter = math.Clamp(value, 0, self.PMeterMax)
+    self._PMeter = math.Clamp(
+        value,
+        0,
+        self.PMeterMax
+    )
 end
 
 function ENT:UpdatePMeter(dt, running)
@@ -109,7 +250,12 @@ function ENT:TurnTowardDirection(targetDirection, dt, turnSpeed, drainTurn)
     targetDirection:Normalize()
 
     local oldForward = self:GetForward()
-    oldForward = Vector(oldForward.x, oldForward.y, 0)
+
+    oldForward = Vector(
+        oldForward.x,
+        oldForward.y,
+        0
+    )
 
     if oldForward:IsZero() then return end
 
@@ -117,12 +263,17 @@ function ENT:TurnTowardDirection(targetDirection, dt, turnSpeed, drainTurn)
 
     local currentAngle = self:GetAngles().y
     local desiredAngle = targetDirection:Angle().y
+
     local difference = math.AngleDifference(
         desiredAngle,
         currentAngle
     )
 
-    local speed = math.max(turnSpeed or self.TurnSpeed, 0)
+    local speed = math.max(
+        turnSpeed or self.TurnSpeed,
+        0
+    )
+
     local easeOut = math.max(self.TurnEaseOut or 10, 0)
 
     local maxTurn = speed * dt
@@ -151,7 +302,12 @@ function ENT:TurnTowardDirection(targetDirection, dt, turnSpeed, drainTurn)
     end
 
     local newForward = self:GetForward()
-    newForward = Vector(newForward.x, newForward.y, 0)
+
+    newForward = Vector(
+        newForward.x,
+        newForward.y,
+        0
+    )
 
     if not newForward:IsZero() then
         newForward:Normalize()
@@ -169,8 +325,18 @@ end
 
 function ENT:PossessionControls(forward, backward, right, left, moveDir)
     if not self:IsPossessed() then return end
+	
+	if not self:GetMovementEnabled() then
+		if self.loco then
+			local velocity = self:GetVelocity()
+			self.loco:SetVelocity(Vector(0, 0, velocity.z))
+		end
+
+		return
+	end
 
     local possessor = self:GetPossessor()
+
     if not IsValid(possessor) then return end
 
     local now = CurTime()
@@ -255,27 +421,27 @@ function ENT:PossessionControls(forward, backward, right, left, moveDir)
     local movingForward = forward and not backward
 
     local wantsPower = possessor:KeyDown(IN_SPEED)
-	local wantsWalkInput = possessor:KeyDown(IN_WALK)
+    local wantsWalkInput = possessor:KeyDown(IN_WALK)
 
-	local threshold = math.Clamp(
-		self.SlowWalkPMeterThreshold or 0,
-		0,
-		self.PMeterMax
-	)
+    local threshold = math.Clamp(
+        self.SlowWalkPMeterThreshold or 0,
+        0,
+        self.PMeterMax
+    )
 
-	local pRunning = wantsPower
+    local pRunning = wantsPower
 
-	local wantsWalk = wantsWalkInput
-		and not wantsPower
-		and self:GetPMeter() <= threshold
+    local wantsWalk = wantsWalkInput
+        and not wantsPower
+        and self:GetPMeter() <= threshold
 
-	if wantsWalk then
-		self:SetPMeter(0)
-	end
+    if wantsWalk then
+        self:SetPMeter(0)
+    end
 
-	self._SlowWalking = wantsWalk
+    self._SlowWalking = wantsWalk
 
-	local meterWasActive = self:GetPMeter() > 0
+    local meterWasActive = self:GetPMeter() > 0
 
     if wantsWalk then
         self:TurnTowardDirection(
@@ -393,8 +559,17 @@ function ENT:BodyUpdate()
 
     if powerRun then
         self:BodyMoveXY({rate = false})
-        self:SetPlaybackRate(self.PowerRunAnimRate or 1.25)
+
+        self:SetPlaybackRate(
+            self:GetHitmenPowerRunAnimationRate()
+        )
     else
         self:BodyMoveXY()
     end
+end
+
+function ENT:CustomInitialize()
+    self:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
+    self:InitializeHitmenAnimationSpeeds()
+    self:InitializePMeter()
 end

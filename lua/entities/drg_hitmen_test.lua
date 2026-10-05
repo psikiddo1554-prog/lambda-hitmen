@@ -21,7 +21,7 @@ ENT.Abilities = {
 			self:AddGestureSequence(sequence, true)
 			
 			self:EmitSound("pursuerswing.mp3", 75, 100, 1, CHAN_AUTO)
-			
+
 			timer.Simple(0.2, function()
 				if not self:IsValid() then return end
 
@@ -50,6 +50,80 @@ ENT.Abilities = {
 				finishAbility(0.9)
 			end)
         end
+    },
+	
+	Cleave = {
+        key = "1",
+
+        canActivate = function(self)
+            return true
+        end,
+
+        func = function(self, finishAbility)
+			local sequence = self:LookupSequence("Cleave")
+			
+			self:AddGestureSequence(sequence, true)
+			self:SetPMeter(0)
+			
+			self:EmitSound("pursuercleave.wav", 75, 100, 1, CHAN_AUTO)
+
+			timer.Simple(0.6, function()
+				if not self:IsValid() then return end
+
+                self:CreateHitboxSequence({
+					sequenceDuration = 0.3,
+					
+					followOwner = false,
+
+					offset = Vector(5, 0, 40),
+					mins = Vector(0, -30, -40),
+					maxs = Vector(50, 30, 30),
+
+					damage = 20,
+					damageType = DMG_SLASH,
+					force = 300,
+					
+					onHit = function(owner, target, hitbox, damageInfo)
+						target:EmitSound("pursuercleavehit.wav", 75, 100, 1, CHAN_AUTO)
+						ParticleEffect("blood_impact_backscatter", target:WorldSpaceCenter(), Angle(0, 0, 0))
+					end
+				})
+			end)
+			
+			timer.Simple(1.4, function()
+				if not self:IsValid() then return end
+				self:EmitSound("pursuerunsheath.mp3", 75, 100, 1, CHAN_AUTO)
+				
+				self:AddGestureSequence(self:LookupSequence("CleaveEnd"), true)
+			end)
+			
+			timer.Simple(2.9, function()
+				if not self:IsValid() then return end
+				finishAbility(22)
+			end)
+		end
+    },
+	
+	Howl = {
+        key = "2",
+
+        canActivate = function(self)
+            return true
+        end,
+
+        func = function(self, finishAbility)
+			self:SetMovementEnabled(false)
+			self:SetPMeter(0)
+			
+			self:EmitSound("pursuerhowl.wav", 75, 100, 1, CHAN_AUTO)
+			
+			self:CallInCoroutine(function(self, delay)
+				self:PlaySequenceAndMove("Howl")
+				
+				self:SetMovementEnabled(true)
+				finishAbility(20)
+			end)
+		end
     }
 }
 
