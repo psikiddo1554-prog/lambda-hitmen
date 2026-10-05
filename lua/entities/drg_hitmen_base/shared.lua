@@ -2,10 +2,6 @@ if not DrGBase then return end
 
 ENT.Base = "drgbase_nextbot"
 
-ENT.PrintName = "Possessable Dummy"
-ENT.Category = "Hitmen"
-ENT.Spawnable = true
-
 ENT.Models = {
     "models/Pursuer.mdl"
 }
@@ -52,10 +48,14 @@ ENT.BehaviourType = AI_BEHAV_CUSTOM
 if SERVER then
     AddCSLuaFile("possession.lua")
     AddCSLuaFile("movement.lua")
+	AddCSLuaFile("abilities.lua")
+	AddCSLuaFile("hitbox.lua")
 end
 
 include("movement.lua")
 include("possession.lua")
+include("abilities.lua")
+include("hitbox.lua")
 
 if SERVER then
     function ENT:CustomInitialize()
