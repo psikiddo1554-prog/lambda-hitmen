@@ -3,6 +3,8 @@ local DAMAGE_INTERVAL = 1
 HitmenEffects.Register("bleeding", {
     duration = 5,
     multiplier = 1,
+	
+	stackable = true,
 
     damagePerTick = 2,
 	
