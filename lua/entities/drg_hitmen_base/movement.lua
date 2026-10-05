@@ -185,11 +185,23 @@ function ENT:SetPMeter(value)
     )
 end
 
-function ENT:UpdatePMeter(dt, running)
+function ENT:SetPMeterMechanicsEnabled(enabled)
+    self._HitmenPMeterMechanicsEnabled = enabled ~= false
+end
+
+function ENT:GetPMeterMechanicsEnabled()
+    return self._HitmenPMeterMechanicsEnabled ~= false
+end
+
+function ENT:UpdatePMeter(dt, running, maintaining)
     local meter = self:GetPMeter()
 
-    if running then
+    if not self:GetPMeterMechanicsEnabled() then
+        meter = meter - self.PMeterDecayRate * dt
+    elseif running then
         meter = meter + self.PMeterBuildRate * dt
+    elseif maintaining then
+        return
     else
         meter = meter - self.PMeterDecayRate * dt
     end
@@ -465,10 +477,17 @@ function ENT:PossessionControls(forward, backward, right, left, moveDir)
         end
     end
 
-    self:UpdatePMeter(
-        dt,
-        pRunning and movingForward
-    )
+    local isBuildingPMeter = pRunning and movingForward
+
+	local isMaintainingPMeter = pRunning
+		and meterWasActive
+		and not isBuildingPMeter
+
+	self:UpdatePMeter(
+		dt,
+		isBuildingPMeter,
+		isMaintainingPMeter
+	)
 
     local meterLocked = pRunning or self:GetPMeter() > 0
 

@@ -21,5 +21,8 @@ HitmenEffects.Register("bleeding", {
         info:SetAttacker(source)
         info:SetInflictor(source)
         target:TakeDamageInfo(info)
+		
+		ParticleEffect("blood_impact_red_01", target:WorldSpaceCenter(), Angle(0, 0, 0))
+		target:EmitSound("dieofdeath/general/bleedpertick.wav", 75, 100, 1, CHAN_AUTO)
     end
 })

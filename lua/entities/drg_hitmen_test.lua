@@ -70,6 +70,8 @@ ENT.Abilities = {
 				multiplier = 2.35
 			})
 			
+			self:SetPMeterMechanicsEnabled(false)
+			
 			self:EmitSound("pursuercleave.wav", 75, 100, 1, CHAN_AUTO)
 
 			timer.Simple(0.6, function()
@@ -93,7 +95,7 @@ ENT.Abilities = {
 						ParticleEffect("blood_impact_backscatter", target:WorldSpaceCenter(), Angle(0, 0, 0))
 						
 						HitmenEffects.Apply(target, "bleeding", {
-							duration = 5,
+							duration = 6,
 							multiplier = 1
 						})
 					end
@@ -114,6 +116,8 @@ ENT.Abilities = {
 			
 			timer.Simple(2.9, function()
 				if not self:IsValid() then return end
+				
+				self:SetPMeterMechanicsEnabled(true)
 				finishAbility(22)
 			end)
 		end
@@ -129,13 +133,99 @@ ENT.Abilities = {
         func = function(self, finishAbility)
 			self:SetMovementEnabled(false)
 			self:SetPMeter(0)
+			self:SetPMeterMechanicsEnabled(false)
 			
 			self:EmitSound("pursuerhowl.wav", 75, 100, 1, CHAN_AUTO)
+			
+			local speedBoost = 1
+			local rewardedTargets = setmetatable({}, { __mode = "k" })
+
+			local function AddHowlSpeedBoost(target, amount)
+				if not IsValid(target) or rewardedTargets[target] then
+					return
+				end
+
+				rewardedTargets[target] = true
+				speedBoost = speedBoost + amount
+			end
+			
+			timer.Simple(0.3, function()
+				if not self:IsValid() then return end
+				
+				self:CreateHitboxSequence({
+					sequenceDuration = 0.65,
+					
+					followOwner = true,
+
+					offset = Vector(0, 0, 30),
+					mins = Vector(-80, -80, -30),
+					maxs = Vector(80, 80, 30),
+
+					damage = 0,
+					force = 300,
+					
+					onHit = function(owner, target, hitbox, damageInfo)
+						AddHowlSpeedBoost(target, 0.4)
+					end
+				})
+				
+				self:CreateHitboxSequence({
+					sequenceDuration = 1.4,
+					
+					followOwner = true,
+
+					offset = Vector(0, 0, 30),
+					mins = Vector(-170, -170, -30),
+					maxs = Vector(170, 170, 30),
+
+					damage = 0,
+					force = 0,
+					
+					onHit = function(owner, target, hitbox, damageInfo)
+						HitmenEffects.Apply(target, "speed", {
+							duration = 3,
+							multiplier = 0.7,
+							stackable = false,
+							refreshable = false
+						})
+						AddHowlSpeedBoost(target, 0.35)
+					end
+				})
+				
+				self:CreateHitboxSequence({
+					sequenceDuration = 1.4,
+					
+					followOwner = true,
+
+					offset = Vector(0, 0, 30),
+					mins = Vector(-410, -410, -30),
+					maxs = Vector(410, 410, 30),
+
+					damage = 0,
+					force = 0,
+					
+					onHit = function(owner, target, hitbox, damageInfo)
+						HitmenEffects.Apply(target, "speed", {
+							duration = 5,
+							multiplier = 0.5,
+							stackable = false,
+							refreshable = false
+						})
+						AddHowlSpeedBoost(target, 0.2)
+					end
+				})
+			end)
 			
 			self:CallInCoroutine(function(self, delay)
 				self:PlaySequenceAndMove("Howl")
 				
 				self:SetMovementEnabled(true)
+				self:SetPMeterMechanicsEnabled(true)
+				
+				HitmenEffects.Apply(self, "speed", {
+					duration = 4,
+					multiplier = speedBoost
+				})
 				finishAbility(20)
 			end)
 		end
