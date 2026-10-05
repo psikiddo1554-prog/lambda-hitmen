@@ -1,5 +1,8 @@
+
 if SERVER then
     AddCSLuaFile()
+    util.AddNetworkString("HitmenEffects_VisualStart")
+    util.AddNetworkString("HitmenEffects_VisualStop")
 end
 
 HitmenEffects = HitmenEffects or {}
@@ -28,6 +31,9 @@ local SPEED_ACCESSORS = {
     { key = "slowWalk", getter = "GetSlowWalkSpeed", setter = "SetSlowWalkSpeed" },
     { key = "ladder", getter = "GetLadderClimbSpeed", setter = "SetLadderClimbSpeed" }
 }
+
+local NextVisualToken = 0
+local ClientVisuals = {}
 
 local function IsEntityType(entity, method)
     if not IsValid(entity) or not isfunction(entity[method]) then
@@ -502,11 +508,9 @@ local function ApplySpeed(entity)
     )
 
     if entity.IsLambdaPlayer == true then
-        -- Lambda Players recalculate desired speed from their
-        -- walk/run accessors. Force their next speed update.
         entity.l_nextspeedupdate = 0
     elseif IsEntityType(entity, "IsPlayer") then
-        -- Player movement is controlled by the speed accessors.
+        -- Player movement is controlled by speed accessors.
     elseif IsEntityType(entity, "IsNPC") then
         if not hasCustomFields and not hasAccessors then
             ApplyNPCSpeed(entity, state, multiplier)
@@ -554,6 +558,329 @@ local function NormalizeID(id)
 
     return id
 end
+
+-- Particle visuals ------------------------------------------------------------
+
+-- A missing bone means all valid bones by default.
+-- Use bone = "origin" to attach to the entity rather than its bones.
+local function NormalizeParticles(particles)
+    if not istable(particles) then
+        return {}
+    end
+
+    -- Accept a single particle definition as well as a list.
+    if particles.effect or particles.name or particles.particle then
+        particles = { particles }
+    end
+
+    local result = {}
+
+    for _, particle in ipairs(particles) do
+        if not istable(particle) then
+            continue
+        end
+
+        local effectName = particle.effect
+            or particle.name
+            or particle.particle
+
+        if not isstring(effectName) or effectName == "" then
+            continue
+        end
+
+        local bone = particle.bone
+
+        if particle.allBones == true
+            or bone == nil
+            or bone == ""
+        then
+            bone = "*"
+        elseif not isstring(bone) then
+            bone = "*"
+        end
+
+        result[#result + 1] = {
+            effect = effectName,
+            bone = bone,
+            offset = isvector(particle.offset)
+                and particle.offset
+                or Vector(0, 0, 0),
+            angles = isangle(particle.angles)
+                and particle.angles
+                or Angle(0, 0, 0)
+        }
+    end
+
+    return result
+end
+
+local function StopEffectVisuals(record)
+    if not SERVER or not record.visualToken then
+        return
+    end
+
+    net.Start("HitmenEffects_VisualStop")
+    net.WriteUInt(record.visualToken, 32)
+    net.Broadcast()
+
+    record.visualToken = nil
+end
+
+local function StartEffectVisuals(entity, record, definition)
+    if not SERVER or not IsValid(entity) then
+        return
+    end
+
+    StopEffectVisuals(record)
+
+    local particles = record.particleOverride
+
+    if particles == nil then
+        particles = definition.particles or definition.visuals
+    end
+
+    particles = NormalizeParticles(particles)
+
+    if #particles == 0 then
+        return
+    end
+
+    NextVisualToken = NextVisualToken + 1
+
+    if NextVisualToken > 2147483646 then
+        NextVisualToken = 1
+    end
+
+    record.visualToken = NextVisualToken
+
+    net.Start("HitmenEffects_VisualStart")
+    net.WriteEntity(entity)
+    net.WriteUInt(record.visualToken, 32)
+    net.WriteTable(particles)
+    net.Broadcast()
+end
+
+if CLIENT then
+    local function RemoveClientVisual(token)
+        local visualSet = ClientVisuals[token]
+
+        if not visualSet then
+            return
+        end
+
+        for _, visual in ipairs(visualSet.anchors) do
+            if IsValid(visual.anchor) then
+                visual.anchor:StopParticles()
+                visual.anchor:Remove()
+            end
+        end
+
+        ClientVisuals[token] = nil
+    end
+
+    local function CreateParticleAnchor(entity, particle, boneIndex)
+        local anchor = ClientsideModel(
+            "models/props_junk/PopCan01a.mdl",
+            RENDERGROUP_OTHER
+        )
+
+        if not IsValid(anchor) then
+            return nil
+        end
+
+        anchor:SetNoDraw(true)
+        anchor:SetNotSolid(true)
+        anchor:SetMoveType(MOVETYPE_NONE)
+
+        local followingBone = false
+
+        if boneIndex ~= nil
+            and boneIndex >= 0
+            and isfunction(anchor.FollowBone)
+        then
+            local ok = pcall(
+                anchor.FollowBone,
+                anchor,
+                entity,
+                boneIndex
+            )
+
+            followingBone = ok
+        end
+
+        if not followingBone then
+            anchor:SetParent(entity)
+        end
+
+        anchor:SetLocalPos(particle.offset or vector_origin)
+        anchor:SetLocalAngles(particle.angles or angle_zero)
+
+        local ok, err = pcall(
+            ParticleEffectAttach,
+            particle.effect,
+            PATTACH_ABSORIGIN_FOLLOW,
+            anchor,
+            0
+        )
+
+        if not ok then
+            LogError("ParticleEffectAttach", err)
+            anchor:Remove()
+            return nil
+        end
+
+        return {
+            anchor = anchor,
+            owner = entity
+        }
+    end
+
+    local function AddParticleForBone(entity, particle, boneIndex, visuals)
+        local visual = CreateParticleAnchor(
+            entity,
+            particle,
+            boneIndex
+        )
+
+        if visual then
+            visuals[#visuals + 1] = visual
+        end
+    end
+
+    net.Receive("HitmenEffects_VisualStart", function()
+        local entity = net.ReadEntity()
+        local token = net.ReadUInt(32)
+        local particles = net.ReadTable()
+
+        RemoveClientVisual(token)
+
+        if not IsValid(entity) or not istable(particles) then
+            return
+        end
+
+        local visuals = {}
+
+        for _, particle in ipairs(particles) do
+            if not istable(particle)
+                or not isstring(particle.effect)
+            then
+                continue
+            end
+
+            local bone = particle.bone
+
+            -- Missing bone names are treated as all bones.
+            if bone == nil or bone == "" then
+                bone = "*"
+            end
+
+            if bone == "*" or particle.allBones == true then
+                local boneCount = 0
+
+                if isfunction(entity.GetBoneCount) then
+                    boneCount = entity:GetBoneCount() or 0
+                end
+
+                local createdForParticle = 0
+
+                for boneIndex = 0, boneCount - 1 do
+                    local boneName
+
+                    if isfunction(entity.GetBoneName) then
+                        boneName = entity:GetBoneName(boneIndex)
+                    end
+
+                    if not isstring(boneName)
+                        or boneName == ""
+                        or boneName == "__INVALIDBONE__"
+                    then
+                        continue
+                    end
+
+                    AddParticleForBone(
+                        entity,
+                        particle,
+                        boneIndex,
+                        visuals
+                    )
+
+                    createdForParticle = createdForParticle + 1
+                end
+
+                -- Models without usable bone data fall back to their origin.
+                if createdForParticle == 0 then
+                    AddParticleForBone(
+                        entity,
+                        particle,
+                        -1,
+                        visuals
+                    )
+                end
+            elseif bone == "origin" then
+                AddParticleForBone(
+                    entity,
+                    particle,
+                    -1,
+                    visuals
+                )
+            else
+                local boneIndex = -1
+
+                if isfunction(entity.LookupBone) then
+                    boneIndex = entity:LookupBone(bone) or -1
+                end
+
+                AddParticleForBone(
+                    entity,
+                    particle,
+                    boneIndex,
+                    visuals
+                )
+            end
+        end
+
+        if #visuals > 0 then
+            ClientVisuals[token] = {
+                owner = entity,
+                anchors = visuals
+            }
+        end
+    end)
+
+    net.Receive("HitmenEffects_VisualStop", function()
+        local token = net.ReadUInt(32)
+        RemoveClientVisual(token)
+    end)
+
+    hook.Add("Think", "HitmenEffects_ClientVisualCleanup", function()
+        for token, visualSet in pairs(ClientVisuals) do
+            local shouldRemove = not IsValid(visualSet.owner)
+
+            if not shouldRemove then
+                for _, visual in ipairs(visualSet.anchors) do
+                    if not IsValid(visual.anchor) then
+                        shouldRemove = true
+                        break
+                    end
+                end
+            end
+
+            if shouldRemove then
+                RemoveClientVisual(token)
+            end
+        end
+    end)
+
+    hook.Add("EntityRemoved", "HitmenEffects_ClientEntityRemoved", function(entity)
+        for token, visualSet in pairs(ClientVisuals) do
+            if visualSet.owner == entity then
+                RemoveClientVisual(token)
+            end
+        end
+    end)
+end
+
+-- Effect callbacks ------------------------------------------------------------
 
 local function RunEffectCallback(entity, id, record, callbackName, ...)
     local definition = Definitions[id] or record.definition
@@ -614,6 +941,8 @@ local function RemoveEffectRecord(entity, id, record, reason)
             active[id] = entry[1]
         end
     end
+
+    StopEffectVisuals(record)
 
     reason = reason or "removed"
 
@@ -691,6 +1020,8 @@ function Effects.Register(id, definition)
                 record.useOverallMultiplierForSpeed =
                     stored.useOverallMultiplierForSpeed == true
             end
+
+            StartEffectVisuals(entity, record, stored)
         end)
 
         ApplySpeed(entity)
@@ -773,11 +1104,6 @@ function Effects.Apply(entity, id, durationOrOptions, multiplierOverride)
         and (CurTime() + duration)
         or nil
 
-    record.nextThink = CurTime()
-        + math.max(tonumber(definition.thinkInterval) or 0.1, 0.01)
-
-    -- The definition provides the default multiplier.
-    -- Apply() can override it for this effect instance.
     if options.multiplier ~= nil then
         record.multiplier = math.max(
             tonumber(options.multiplier) or definition.multiplier,
@@ -835,6 +1161,14 @@ function Effects.Apply(entity, id, durationOrOptions, multiplierOverride)
         record.data = options.data
     end
 
+    -- Preserve per-application visual overrides on refresh.
+    -- An empty particle table explicitly disables definition particles.
+    if options.particles ~= nil then
+        record.particleOverride = options.particles
+    elseif not isRefresh then
+        record.particleOverride = nil
+    end
+
     if not isRefresh then
         AddEffectRecord(active, id, record)
     end
@@ -843,6 +1177,7 @@ function Effects.Apply(entity, id, durationOrOptions, multiplierOverride)
     ActiveEntities[entity] = true
 
     ApplySpeed(entity)
+    StartEffectVisuals(entity, record, definition)
 
     local callbackName = isRefresh and "OnRefresh" or "OnApply"
     local callback = definition[callbackName]
@@ -1008,6 +1343,9 @@ Effects.HasEffect = Effects.Has
 Effects.GetEffect = Effects.Get
 Effects.ClearEffects = Effects.Clear
 
+-- No thinkInterval or nextThink scheduling.
+-- OnThink runs once per server Think update for each active effect.
+
 hook.Add("Think", "HitmenEffects_Update", function()
     if not SERVER then
         return
@@ -1039,19 +1377,7 @@ hook.Add("Think", "HitmenEffects_Update", function()
                 return
             end
 
-            if now < (record.nextThink or now) then
-                return
-            end
-
             local definition = Definitions[id] or record.definition
-
-            local interval = math.max(
-                tonumber(definition and definition.thinkInterval) or 0.1,
-                0.01
-            )
-
-            record.nextThink = now + interval
-
             local callback = definition and definition.OnThink
 
             if isfunction(callback) then
@@ -1060,7 +1386,7 @@ hook.Add("Think", "HitmenEffects_Update", function()
                     entity,
                     record,
                     now,
-                    interval
+                    FrameTime()
                 )
 
                 if not ok then
