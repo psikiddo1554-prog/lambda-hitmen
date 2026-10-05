@@ -1,5 +1,6 @@
 ENT.Abilities = ENT.Abilities or {}
 
+local ABILITY_INPUT_STATE_NET = "Hitmen_AbilityInputBlocked"
 local DEFAULT_PASSIVE_INTERVAL = 0.05
 
 local MOUSE_ALIASES = {
@@ -32,7 +33,6 @@ local function ResolveAbilityKey(key)
     end
 
     key = string.upper(string.Trim(key))
-
     key = MOUSE_ALIASES[key] or key
 
     if isnumber(_G[key]) then
@@ -69,6 +69,39 @@ local function GetPassiveTimerName(ent, id)
         .. ent:EntIndex()
         .. "_"
         .. tostring(id)
+end
+
+-- Completes one particular activation.
+-- The execution token prevents an old timer from
+-- accidentally finishing a newer activation.
+local function FinishAbilityExecution(ent, id, execution, cooldown)
+    if not SERVER or not IsValid(ent) then
+        return false
+    end
+
+    if not istable(ent._AbilityExecuting)
+        or ent._AbilityExecuting[id] ~= execution then
+        return false
+    end
+
+    local ability = execution.ability
+
+    cooldown = tonumber(cooldown)
+
+    if cooldown == nil then
+        cooldown = tonumber(ability and ability.cooldown) or 0
+    end
+
+    cooldown = math.max(cooldown, 0)
+
+    -- Mark the ability as finished.
+    ent._AbilityExecuting[id] = nil
+
+    -- The cooldown begins when the ability finishes.
+    ent._AbilityCooldowns = ent._AbilityCooldowns or {}
+    ent._AbilityCooldowns[id] = CurTime() + cooldown
+
+    return true, cooldown
 end
 
 local function StopPassiveAbility(ent, id, timerName)
@@ -167,6 +200,26 @@ function ENT:InitializeAbilities()
     end
 end
 
+-- Public completion function.
+-- Usage: self:FinishAbility("AbilityName", cooldown)
+function ENT:FinishAbility(id, cooldown)
+    if not SERVER or not IsValid(self) then
+        return false
+    end
+
+    local execution = self._AbilityExecuting
+        and self._AbilityExecuting[id]
+
+    if not execution then
+        return false
+    end
+
+    return FinishAbilityExecution(self, id, execution, cooldown)
+end
+
+-- Optional alternative name.
+ENT.EndAbility = ENT.FinishAbility
+
 function ENT:ActivateAbility(id)
     if not SERVER or not IsValid(self) then
         return false
@@ -193,6 +246,7 @@ function ENT:ActivateAbility(id)
 
     local now = CurTime()
 
+    -- Do not restart an ability that is still active.
     if self._AbilityExecuting[id] then
         return false
     end
@@ -206,20 +260,42 @@ function ENT:ActivateAbility(id)
         return false
     end
 
-    self._AbilityExecuting[id] = true
+    -- Each activation gets its own execution token.
+    local execution = {
+        ability = ability
+    }
 
-    local ok, cooldown = pcall(ability.func, self)
+    self._AbilityExecuting[id] = execution
 
-    if IsValid(self) and self._AbilityExecuting then
-        self._AbilityExecuting[id] = nil
+    -- This callback can be saved and invoked later.
+    -- It does not require the ability to return anything.
+    local function finishAbility(cooldown)
+        return FinishAbilityExecution(
+            self,
+            id,
+            execution,
+            cooldown
+        )
     end
 
+    -- The second argument is the completion callback.
+    -- The third argument is the ability ID.
+    local ok, returnedCooldown = pcall(
+        ability.func,
+        self,
+        finishAbility,
+        id
+    )
+
     if not ok then
+        -- Avoid leaving a broken ability permanently active.
+        FinishAbilityExecution(self, id, execution, 0)
+
         ErrorNoHalt(
             "[Hitmen Abilities] "
             .. tostring(id)
             .. ": "
-            .. tostring(cooldown)
+            .. tostring(returnedCooldown)
             .. "\n"
         )
 
@@ -230,12 +306,30 @@ function ENT:ActivateAbility(id)
         return false
     end
 
-    cooldown = tonumber(cooldown) or 0
-    cooldown = math.max(cooldown, 0)
+    -- Backwards compatibility:
+    -- returning a number still finishes immediately.
+    if isnumber(returnedCooldown) then
+        FinishAbilityExecution(
+            self,
+            id,
+            execution,
+            returnedCooldown
+        )
+    end
 
-    self._AbilityCooldowns[id] = CurTime() + cooldown
+    -- No numeric return means the ability stays active
+    -- unless its completion callback has already fired.
+    if self._AbilityExecuting
+        and self._AbilityExecuting[id] == execution then
+        return true
+    end
 
-    return true, cooldown
+    local readyAt = self._AbilityCooldowns[id]
+    local remainingCooldown = readyAt
+        and math.max(readyAt - CurTime(), 0)
+        or nil
+
+    return true, remainingCooldown
 end
 
 function ENT:CancelAbilities()
@@ -248,18 +342,18 @@ function ENT:CancelAbilities()
 end
 
 if SERVER then
+    util.AddNetworkString(ABILITY_INPUT_STATE_NET)
+
+    net.Receive(ABILITY_INPUT_STATE_NET, function(_, ply)
+        if not IsValid(ply) then return end
+
+        ply._HitmenAbilityInputBlocked = net.ReadBool()
+    end)
+
     local function InitializeEntityAbilities(ent)
-        if not IsValid(ent) then
-            return
-        end
-
-        if not isfunction(ent.InitializeAbilities) then
-            return
-        end
-
-        if not istable(ent.Abilities) then
-            return
-        end
+        if not IsValid(ent) then return end
+        if not isfunction(ent.InitializeAbilities) then return end
+        if not istable(ent.Abilities) then return end
 
         ent:InitializeAbilities()
     end
@@ -284,11 +378,21 @@ if SERVER then
         "PlayerButtonDown",
         "Hitmen_AbilityKeybinds",
         function(ply, button)
-            if not IsValid(ply) then
+            if not IsValid(ply) then return end
+            if not IsFirstTimePredicted() then return end
+
+            if ply._HitmenAbilityInputBlocked then
                 return
             end
 
-            if not IsFirstTimePredicted() then
+            if game.GetTimeScale() <= 0.001 then
+                return
+            end
+
+            local hostTimeScale = GetConVar("host_timescale")
+
+            if hostTimeScale
+                and hostTimeScale:GetFloat() <= 0.001 then
                 return
             end
 
@@ -312,4 +416,103 @@ if SERVER then
             end
         end
     )
+
+elseif CLIENT then
+    local lastBlockedState = nil
+
+    local function IsPanelOpen(panel)
+        return IsValid(panel) and panel:IsVisible()
+    end
+
+    local function IsAbilityInputBlocked()
+        if gui.IsGameUIVisible() or gui.IsConsoleVisible() then
+            return true
+        end
+
+        if IsPanelOpen(g_SpawnMenu)
+            or IsPanelOpen(g_ContextMenu) then
+            return true
+        end
+
+        if vgui.CursorVisible() then
+            return true
+        end
+
+        local focusedPanel = vgui.GetKeyboardFocus()
+
+        if IsValid(focusedPanel)
+            and focusedPanel ~= vgui.GetWorldPanel() then
+            return true
+        end
+
+        return false
+    end
+
+    local function SetAbilityInputBlocked(blocked, force)
+        blocked = blocked == true
+
+        if not force and lastBlockedState == blocked then
+            return
+        end
+
+        lastBlockedState = blocked
+
+        net.Start(ABILITY_INPUT_STATE_NET)
+        net.WriteBool(blocked)
+        net.SendToServer()
+    end
+
+    local function RefreshAbilityInputState()
+        SetAbilityInputBlocked(IsAbilityInputBlocked())
+    end
+
+    hook.Add(
+        "Think",
+        "Hitmen_AbilityInputUIState",
+        RefreshAbilityInputState
+    )
+
+    hook.Add(
+        "OnSpawnMenuOpen",
+        "Hitmen_BlockAbilitiesSpawnMenu",
+        function()
+            SetAbilityInputBlocked(true)
+        end
+    )
+
+    hook.Add(
+        "OnContextMenuOpen",
+        "Hitmen_BlockAbilitiesContextMenu",
+        function()
+            SetAbilityInputBlocked(true)
+        end
+    )
+
+    hook.Add(
+        "OnPauseMenuShow",
+        "Hitmen_BlockAbilitiesPauseMenu",
+        function()
+            SetAbilityInputBlocked(true)
+        end
+    )
+
+    hook.Add(
+        "OnSpawnMenuClose",
+        "Hitmen_UnblockAbilitiesSpawnMenu",
+        function()
+            timer.Simple(0, RefreshAbilityInputState)
+        end
+    )
+
+    hook.Add(
+        "OnContextMenuClose",
+        "Hitmen_UnblockAbilitiesContextMenu",
+        function()
+            timer.Simple(0, RefreshAbilityInputState)
+        end
+    )
+
+    timer.Simple(0, function()
+        SetAbilityInputBlocked(IsAbilityInputBlocked(), true)
+    end)
 end

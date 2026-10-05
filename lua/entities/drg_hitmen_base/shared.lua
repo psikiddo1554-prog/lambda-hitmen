@@ -59,6 +59,7 @@ include("hitbox.lua")
 
 if SERVER then
     function ENT:CustomInitialize()
+        self:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
     end
 
     function ENT:OnIdle()
