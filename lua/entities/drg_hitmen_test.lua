@@ -65,6 +65,11 @@ ENT.Abilities = {
 			self:AddGestureSequence(sequence, true)
 			self:SetPMeter(0)
 			
+			HitmenEffects.Apply(self, "speed", {
+				duration = 1.4,
+				multiplier = 2.35
+			})
+			
 			self:EmitSound("pursuercleave.wav", 75, 100, 1, CHAN_AUTO)
 
 			timer.Simple(0.6, function()
@@ -86,6 +91,11 @@ ENT.Abilities = {
 					onHit = function(owner, target, hitbox, damageInfo)
 						target:EmitSound("pursuercleavehit.wav", 75, 100, 1, CHAN_AUTO)
 						ParticleEffect("blood_impact_backscatter", target:WorldSpaceCenter(), Angle(0, 0, 0))
+						
+						HitmenEffects.Apply(target, "bleeding", {
+							duration = 5,
+							multiplier = 1
+						})
 					end
 				})
 			end)
@@ -93,6 +103,11 @@ ENT.Abilities = {
 			timer.Simple(1.4, function()
 				if not self:IsValid() then return end
 				self:EmitSound("pursuerunsheath.mp3", 75, 100, 1, CHAN_AUTO)
+				
+				HitmenEffects.Apply(self, "speed", {
+					duration = 1.5,
+					multiplier = 0.35
+				})
 				
 				self:AddGestureSequence(self:LookupSequence("CleaveEnd"), true)
 			end)
