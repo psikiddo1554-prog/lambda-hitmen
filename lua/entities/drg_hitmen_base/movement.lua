@@ -2,6 +2,16 @@ ENT.WalkSpeed = 175
 ENT.RunSpeed = 350
 ENT.PowerSpeed = 700
 
+-- Forward propulsion settings
+ENT.PropelSpeed = 5000
+ENT.PropelSpeedMin = 100
+ENT.PropelSpeedMax = 50000
+
+ENT.PropelTurnSpeed = 1200
+
+ENT.PropelAcceleration = 100000
+ENT.PropelDeceleration = 100000
+
 ENT.PMeterMax = 100
 ENT.PMeterBuildRate = 50
 ENT.PMeterDecayRate = 85
@@ -18,6 +28,10 @@ ENT.Acceleration = 10000
 ENT.Deceleration = 10000
 
 ENT.PowerRunAnimRate = 1.25
+
+--------------------------------------------------
+-- ANIMATION SPEEDS
+--------------------------------------------------
 
 function ENT:InitializeHitmenAnimationSpeeds()
     if self._HitmenAnimationBaseSpeeds then
@@ -135,13 +149,19 @@ function ENT:OnUpdateAnimation()
     return self.IdleAnimation, self.IdleAnimRate
 end
 
+--------------------------------------------------
+-- MOVEMENT ENABLE/DISABLE
+--------------------------------------------------
+
 function ENT:SetMovementEnabled(enabled)
     self._HitmenMovementEnabled = enabled == true
 
     if not self._HitmenMovementEnabled and self.loco then
         local velocity = self:GetVelocity()
 
-        self.loco:SetVelocity(Vector(0, 0, velocity.z))
+        self.loco:SetVelocity(
+            Vector(0, 0, velocity.z)
+        )
     end
 end
 
@@ -149,10 +169,277 @@ function ENT:GetMovementEnabled()
     return self._HitmenMovementEnabled ~= false
 end
 
+--------------------------------------------------
+-- FORWARD PROPULSION
+--------------------------------------------------
+
+-- Propels the hitman forward in the direction it faces.
+--
+-- duration:
+--     Optional duration in seconds.
+--     Omit to propel until StopPropellingForward() is called.
+--
+-- speed:
+--     Optional propulsion speed.
+--     Clamped to PropelSpeedMin and PropelSpeedMax.
+--
+-- turnRate:
+--     Optional turning rate in degrees per second.
+--     Defaults to PropelTurnSpeed.
+--
+-- Examples:
+--     self:PropelForward(1, 15000, 350)
+--     self:PropelForward(2, 30000, 700)
+--     self:PropelForward(nil, 10000, 500)
+--     self:PropelForward()
+
+function ENT:PropelForward(duration, speed, turnRate)
+    if not SERVER or not IsValid(self) then
+        return false
+    end
+
+    -- Validate the optional duration.
+    if duration ~= nil then
+        duration = tonumber(duration)
+
+        if duration == nil then
+            return false
+        end
+
+        duration = math.max(duration, 0)
+    end
+
+    -- Resolve the allowed propulsion speed range.
+    local minSpeed = math.max(
+        tonumber(self.PropelSpeedMin) or 100,
+        0
+    )
+
+    local maxSpeed = math.max(
+        tonumber(self.PropelSpeedMax) or 50000,
+        minSpeed
+    )
+
+    -- Resolve and clamp propulsion speed.
+    speed = tonumber(speed)
+        or tonumber(self.PropelSpeed)
+        or tonumber(self.PowerSpeed)
+        or 5000
+
+    speed = math.Clamp(
+        speed,
+        minSpeed,
+        maxSpeed
+    )
+
+    -- Resolve the independent steering rate.
+    turnRate = tonumber(turnRate)
+        or tonumber(self.PropelTurnSpeed)
+        or 1200
+
+    turnRate = math.max(turnRate, 0)
+
+    -- Capture the current horizontal forward direction.
+    local forward = self:GetForward()
+
+    local direction = Vector(
+        forward.x,
+        forward.y,
+        0
+    )
+
+    if direction:IsZero() then
+        return false
+    end
+
+    direction:Normalize()
+
+    local alreadyPropelling =
+        self._HitmenForwardPropulsion == true
+
+    -- Save the original locomotion settings only once.
+    if self.loco and not alreadyPropelling then
+        self._HitmenPropelOriginalAcceleration = nil
+        self._HitmenPropelOriginalDeceleration = nil
+        self._HitmenPropelOriginalDesiredSpeed = nil
+
+        if isfunction(self.loco.GetAcceleration) then
+            self._HitmenPropelOriginalAcceleration =
+                self.loco:GetAcceleration()
+        end
+
+        if isfunction(self.loco.GetDeceleration) then
+            self._HitmenPropelOriginalDeceleration =
+                self.loco:GetDeceleration()
+        end
+
+        if isfunction(self.loco.GetDesiredSpeed) then
+            self._HitmenPropelOriginalDesiredSpeed =
+                self.loco:GetDesiredSpeed()
+        end
+    end
+
+    -- Invalidate any older propulsion timer.
+    self._HitmenForwardPropulsionToken =
+        (self._HitmenForwardPropulsionToken or 0) + 1
+
+    local token = self._HitmenForwardPropulsionToken
+
+    -- Activate propulsion.
+    self._HitmenForwardPropulsion = true
+
+    self._HitmenForwardPropulsionDirection = direction
+    self._HitmenForwardPropulsionSpeed = speed
+    self._HitmenForwardPropulsionTurnSpeed = turnRate
+    self._HitmenForwardPropulsionEnd = nil
+
+    self._HitmenPropelLastTurnTime = CurTime()
+
+    -- Raise locomotion acceleration for propulsion.
+    if self.loco then
+        if isfunction(self.loco.SetAcceleration) then
+            self.loco:SetAcceleration(
+                math.max(
+                    tonumber(self.PropelAcceleration) or 100000,
+                    1
+                )
+            )
+        end
+
+        if isfunction(self.loco.SetDeceleration) then
+            self.loco:SetDeceleration(
+                math.max(
+                    tonumber(self.PropelDeceleration) or 100000,
+                    1
+                )
+            )
+        end
+
+        if isfunction(self.loco.SetDesiredSpeed) then
+            self.loco:SetDesiredSpeed(speed)
+        end
+    end
+
+    -- Automatically stop after the specified duration.
+    if duration ~= nil then
+        self._HitmenForwardPropulsionEnd =
+            CurTime() + duration
+
+        timer.Simple(duration, function()
+            if not IsValid(self) then
+                return
+            end
+
+            -- Prevent stale timers from stopping a newer activation.
+            if self._HitmenForwardPropulsionToken ~= token then
+                return
+            end
+
+            self:StopPropellingForward()
+        end)
+    end
+
+    return true
+end
+
+-- Stops propulsion and restores saved locomotion settings.
+function ENT:StopPropellingForward()
+    if not SERVER or not IsValid(self) then
+        return false
+    end
+
+    local wasPropelling =
+        self._HitmenForwardPropulsion == true
+
+    -- Invalidate pending propulsion timers.
+    self._HitmenForwardPropulsionToken =
+        (self._HitmenForwardPropulsionToken or 0) + 1
+
+    self._HitmenForwardPropulsion = nil
+    self._HitmenForwardPropulsionDirection = nil
+    self._HitmenForwardPropulsionSpeed = nil
+    self._HitmenForwardPropulsionTurnSpeed = nil
+    self._HitmenForwardPropulsionEnd = nil
+    self._HitmenPropelLastTurnTime = nil
+
+    if self.loco then
+        local originalAcceleration =
+            self._HitmenPropelOriginalAcceleration
+
+        local originalDeceleration =
+            self._HitmenPropelOriginalDeceleration
+
+        local originalDesiredSpeed =
+            self._HitmenPropelOriginalDesiredSpeed
+
+        if isfunction(self.loco.SetAcceleration) then
+            self.loco:SetAcceleration(
+                tonumber(originalAcceleration)
+                    or tonumber(self.Acceleration)
+                    or 10000
+            )
+        end
+
+        if isfunction(self.loco.SetDeceleration) then
+            self.loco:SetDeceleration(
+                tonumber(originalDeceleration)
+                    or tonumber(self.Deceleration)
+                    or 10000
+            )
+        end
+
+        if isfunction(self.loco.SetDesiredSpeed) then
+            self.loco:SetDesiredSpeed(
+                tonumber(originalDesiredSpeed)
+                    or tonumber(self.RunSpeed)
+                    or 350
+            )
+        end
+
+        -- Cancel horizontal velocity, retaining vertical velocity.
+        local velocity = self:GetVelocity()
+
+        self.loco:SetVelocity(
+            Vector(0, 0, velocity.z)
+        )
+    end
+
+    self._HitmenPropelOriginalAcceleration = nil
+    self._HitmenPropelOriginalDeceleration = nil
+    self._HitmenPropelOriginalDesiredSpeed = nil
+
+    return wasPropelling
+end
+
+-- Returns whether propulsion is active.
+function ENT:IsPropellingForward()
+    if self._HitmenForwardPropulsion ~= true then
+        return false
+    end
+
+    local endTime = self._HitmenForwardPropulsionEnd
+
+    if endTime and CurTime() >= endTime then
+        self:StopPropellingForward()
+        return false
+    end
+
+    return true
+end
+
+--------------------------------------------------
+-- P-METER
+--------------------------------------------------
+
 function ENT:InitializePMeter()
     self._PMeter = 0
     self._PMeterLastUpdate = CurTime()
     self._SlowWalking = false
+	
+	if SERVER then
+		self:SetNW2Float("HitmenPMeter", 0)
+		self:SetNW2Float("HitmenPMeterMax", self.PMeterMax or 100)
+	end
 
     local forward = self:GetForward()
 
@@ -178,11 +465,24 @@ function ENT:GetPMeter()
 end
 
 function ENT:SetPMeter(value)
-    self._PMeter = math.Clamp(
-        value,
-        0,
-        self.PMeterMax
+    local meterMax = math.max(
+        tonumber(self.PMeterMax) or 100,
+        1
     )
+
+    self._PMeter = math.Clamp(value, 0, meterMax)
+
+    if SERVER then
+        self:SetNW2Float(
+            "HitmenPMeter",
+            self._PMeter
+        )
+
+        self:SetNW2Float(
+            "HitmenPMeterMax",
+            meterMax
+        )
+    end
 end
 
 function ENT:SetPMeterMechanicsEnabled(enabled)
@@ -219,13 +519,26 @@ function ENT:GetPMeterSpeed()
     )
 end
 
+--------------------------------------------------
+-- P-METER TURNING
+--------------------------------------------------
+
 function ENT:DrainPMeterForTurn(oldDirection, newDirection)
     if self:GetPMeter() <= 0 then return end
     if not oldDirection or not newDirection then return end
     if oldDirection:IsZero() or newDirection:IsZero() then return end
 
-    oldDirection = Vector(oldDirection.x, oldDirection.y, 0)
-    newDirection = Vector(newDirection.x, newDirection.y, 0)
+    oldDirection = Vector(
+        oldDirection.x,
+        oldDirection.y,
+        0
+    )
+
+    newDirection = Vector(
+        newDirection.x,
+        newDirection.y,
+        0
+    )
 
     if oldDirection:IsZero() or newDirection:IsZero() then return end
 
@@ -239,6 +552,7 @@ function ENT:DrainPMeterForTurn(oldDirection, newDirection)
     )
 
     local angle = math.deg(math.acos(dot))
+
     local resistance = math.max(self.TurnResistance or 0, 0)
     local multiplier = math.max(self.TurnDrainMultiplier or 0, 0)
     local perDegree = math.max(self.TurnDrainPerDegree or 0, 0)
@@ -302,7 +616,9 @@ function ENT:TurnTowardDirection(targetDirection, dt, turnSpeed, drainTurn)
     end
 
     if math.abs(difference) <= 0.1 then
-        self:SetAngles(Angle(0, desiredAngle, 0))
+        self:SetAngles(
+            Angle(0, desiredAngle, 0)
+        )
     elseif math.abs(turnAmount) > 0 then
         self:SetAngles(
             Angle(
@@ -335,21 +651,128 @@ function ENT:TurnTowardDirection(targetDirection, dt, turnSpeed, drainTurn)
     end
 end
 
-function ENT:PossessionControls(forward, backward, right, left, moveDir)
-    if not self:IsPossessed() then return end
-	
-	if not self:GetMovementEnabled() then
-		if self.loco then
-			local velocity = self:GetVelocity()
-			self.loco:SetVelocity(Vector(0, 0, velocity.z))
-		end
+--------------------------------------------------
+-- POSSESSION CONTROLS
+--------------------------------------------------
 
-		return
-	end
+function ENT:PossessionControls(forward, backward, right, left, moveDir)
+
+    --------------------------------------------------
+    -- FORWARD PROPULSION OVERRIDE
+    --------------------------------------------------
+
+    if self:IsPropellingForward() then
+        local direction =
+            self._HitmenForwardPropulsionDirection
+
+        local speed =
+            self._HitmenForwardPropulsionSpeed
+            or self.PropelSpeed
+            or 5000
+
+        if self.loco and direction and not direction:IsZero() then
+
+            -- Permit steering while possessed.
+            -- This does not enable the slow-walking state.
+            if self:IsPossessed() then
+                local possessor = self:GetPossessor()
+
+                if IsValid(possessor) then
+                    local targetDirection =
+                        self:PossessorForward()
+
+                    if targetDirection
+                        and not targetDirection:IsZero() then
+
+                        local now = CurTime()
+
+                        local turnDT = math.Clamp(
+                            now - (self._HitmenPropelLastTurnTime or now),
+                            0,
+                            0.1
+                        )
+
+                        self._HitmenPropelLastTurnTime = now
+
+                        self:TurnTowardDirection(
+                            targetDirection,
+                            turnDT,
+                            self._HitmenForwardPropulsionTurnSpeed
+                                or self.PropelTurnSpeed
+                                or 1200,
+                            false
+                        )
+                    end
+                end
+            end
+
+            -- Keep propulsion aligned with the entity's
+            -- newly adjusted facing direction.
+            local forwardDirection = self:GetForward()
+
+            direction = Vector(
+                forwardDirection.x,
+                forwardDirection.y,
+                0
+            )
+
+            if not direction:IsZero() then
+                direction:Normalize()
+
+                self._HitmenForwardPropulsionDirection =
+                    direction
+            else
+                self:StopPropellingForward()
+                return
+            end
+
+            -- Maintain the selected propulsion speed.
+            self:SetSpeed(speed)
+
+            if isfunction(self.loco.SetDesiredSpeed) then
+                self.loco:SetDesiredSpeed(speed)
+            end
+
+            -- Approach a point farther ahead to accommodate
+            -- very high propulsion speeds.
+            local targetDistance = math.max(speed, 1000)
+
+            self:Approach(
+                self:GetPos() + direction * targetDistance
+            )
+
+            return
+        end
+
+        self:StopPropellingForward()
+    end
+
+    --------------------------------------------------
+    -- NORMAL POSSESSION MOVEMENT
+    --------------------------------------------------
+
+    if not self:IsPossessed() then return end
+
+    if not self:GetMovementEnabled() then
+        if self.loco then
+            local velocity = self:GetVelocity()
+
+            self.loco:SetVelocity(
+                Vector(0, 0, velocity.z)
+            )
+        end
+
+        return
+    end
 
     local possessor = self:GetPossessor()
 
-    if not IsValid(possessor) then return end
+	if not IsValid(possessor) then return end
+
+	self:SetNW2Entity(
+		"HitmenPossessor",
+		possessor
+	)
 
     local now = CurTime()
 
@@ -479,15 +902,15 @@ function ENT:PossessionControls(forward, backward, right, left, moveDir)
 
     local isBuildingPMeter = pRunning and movingForward
 
-	local isMaintainingPMeter = pRunning
-		and meterWasActive
-		and not isBuildingPMeter
+    local isMaintainingPMeter = pRunning
+        and meterWasActive
+        and not isBuildingPMeter
 
-	self:UpdatePMeter(
-		dt,
-		isBuildingPMeter,
-		isMaintainingPMeter
-	)
+    self:UpdatePMeter(
+        dt,
+        isBuildingPMeter,
+        isMaintainingPMeter
+    )
 
     local meterLocked = pRunning or self:GetPMeter() > 0
 
@@ -566,6 +989,10 @@ function ENT:PossessionControls(forward, backward, right, left, moveDir)
     )
 end
 
+--------------------------------------------------
+-- BODY ANIMATION UPDATE
+--------------------------------------------------
+
 function ENT:BodyUpdate()
     local powerRun = false
 
@@ -586,6 +1013,10 @@ function ENT:BodyUpdate()
         self:BodyMoveXY()
     end
 end
+
+--------------------------------------------------
+-- INITIALIZATION
+--------------------------------------------------
 
 function ENT:CustomInitialize()
     self:SetCollisionGroup(COLLISION_GROUP_DEBRIS)

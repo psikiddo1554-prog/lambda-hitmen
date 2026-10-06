@@ -9,6 +9,8 @@ ENT.Spawnable = true
 ENT.Abilities = {
     Swing = {
         mouse = "LEFT",
+		
+		showInHUD = false,
 
         canActivate = function(self)
             return true
@@ -53,6 +55,8 @@ ENT.Abilities = {
     },
 	
 	Cleave = {
+		name = "Meat Cleave",
+		glyph = "lambda_hitmen/ability_icons/cleave.png",
         key = "1",
 
         canActivate = function(self)
@@ -64,15 +68,22 @@ ENT.Abilities = {
 			
 			self:SetPMeter(0)
 			self:SetPMeterMechanicsEnabled(false)
-			self:SetMovementEnabled(false)
+			
+			HitmenEffects.Apply(self, "speed", {
+				duration = 0.6,
+				multiplier = 0.35
+			})
 			
 			self:EmitSound("pursuercleave.wav", 75, 100, 1, CHAN_AUTO)
 
 			timer.Simple(0.6, function()
 				if not self:IsValid() then return end
+				
+				self:SetMovementEnabled(false)
+				self:PropelForward(0.4, 2000, 1200)
 
                 self:CreateHitboxSequence({
-					sequenceDuration = 0.3,
+					sequenceDuration = 0.4,
 					
 					followOwner = false,
 
@@ -94,7 +105,7 @@ ENT.Abilities = {
 				})
 			end)
 			
-			timer.Simple(1.3, function()
+			timer.Simple(1.1, function()
 				if not self:IsValid() then return end
 				self:EmitSound("pursuerunsheath.mp3", 75, 100, 1, CHAN_AUTO)
 				
@@ -103,15 +114,15 @@ ENT.Abilities = {
 				
 				HitmenEffects.Apply(self, "speed", {
 					duration = 1.5,
-					multiplier = 0.85
+					multiplier = 0.65
 				})
 				
 				self:AddGestureSequence(self:LookupSequence("CleaveEnd"), true)
 			end)
 			
-			timer.Simple(2.8, function()
+			timer.Simple(2.5, function()
 				if not self:IsValid() then return end
-				finishAbility(22)
+				finishAbility(11)
 			end)
         end
     }

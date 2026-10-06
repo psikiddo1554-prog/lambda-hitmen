@@ -1,7 +1,12 @@
+
 ENT.Abilities = ENT.Abilities or {}
 
 local ABILITY_INPUT_STATE_NET = "Hitmen_AbilityInputBlocked"
 local DEFAULT_PASSIVE_INTERVAL = 0.05
+
+-- HUD network state.
+-- Keep this prefix consistent with hud.lua.
+local ABILITY_HUD_NET_PREFIX = "HitmenAbilityHUD_"
 
 local MOUSE_ALIASES = {
     LEFT = "MOUSE_LEFT",
@@ -71,10 +76,59 @@ local function GetPassiveTimerName(ent, id)
         .. tostring(id)
 end
 
+-- Publishes ability state for the client HUD.
+--
+-- Active:
+--   Whether the ability is currently executing.
+--
+-- CooldownEnd:
+--   CurTime() timestamp when the cooldown will end.
+--
+-- CooldownDuration:
+--   The full cooldown duration in seconds.
+local function PublishAbilityHUDState(
+    ent,
+    id,
+    active,
+    cooldownEnd,
+    cooldownDuration
+)
+    if not SERVER or not IsValid(ent) then
+        return
+    end
+
+    local prefix = ABILITY_HUD_NET_PREFIX
+        .. tostring(id)
+        .. "_"
+
+    ent:SetNW2Bool(
+        prefix .. "Active",
+        active == true
+    )
+
+    ent:SetNW2Float(
+        prefix .. "CooldownEnd",
+        tonumber(cooldownEnd) or 0
+    )
+
+    ent:SetNW2Float(
+        prefix .. "CooldownDuration",
+        math.max(
+            tonumber(cooldownDuration) or 0,
+            0
+        )
+    )
+end
+
 -- Completes one particular activation.
 -- The execution token prevents an old timer from
 -- accidentally finishing a newer activation.
-local function FinishAbilityExecution(ent, id, execution, cooldown)
+local function FinishAbilityExecution(
+    ent,
+    id,
+    execution,
+    cooldown
+)
     if not SERVER or not IsValid(ent) then
         return false
     end
@@ -97,9 +151,25 @@ local function FinishAbilityExecution(ent, id, execution, cooldown)
     -- Mark the ability as finished.
     ent._AbilityExecuting[id] = nil
 
-    -- The cooldown begins when the ability finishes.
+    -- Record the cooldown that starts now.
     ent._AbilityCooldowns = ent._AbilityCooldowns or {}
-    ent._AbilityCooldowns[id] = CurTime() + cooldown
+    ent._AbilityCooldownDurations =
+        ent._AbilityCooldownDurations or {}
+
+    local cooldownEnd = CurTime() + cooldown
+
+    ent._AbilityCooldowns[id] = cooldownEnd
+    ent._AbilityCooldownDurations[id] = cooldown
+
+    -- Tell the HUD the ability has ended and its
+    -- cooldown has begun.
+    PublishAbilityHUDState(
+        ent,
+        id,
+        false,
+        cooldownEnd,
+        cooldown
+    )
 
     return true, cooldown
 end
@@ -190,10 +260,28 @@ function ENT:InitializeAbilities()
     end
 
     self._AbilityCooldowns = self._AbilityCooldowns or {}
+    self._AbilityCooldownDurations =
+        self._AbilityCooldownDurations or {}
+
     self._AbilityExecuting = self._AbilityExecuting or {}
     self._AbilityPassiveTimers = self._AbilityPassiveTimers or {}
 
     for id, ability in pairs(self.Abilities or {}) do
+        -- Initialize the HUD state with the ability's
+        -- current execution and cooldown information.
+        local cooldownEnd = self._AbilityCooldowns[id] or 0
+        local cooldownDuration =
+            self._AbilityCooldownDurations[id] or 0
+
+        PublishAbilityHUDState(
+            self,
+            id,
+            self._AbilityExecuting[id] ~= nil,
+            cooldownEnd,
+            cooldownDuration
+        )
+
+        -- Start passive abilities as before.
         if istable(ability) and ability.passive == true then
             StartPassiveAbility(self, id, ability)
         end
@@ -214,7 +302,12 @@ function ENT:FinishAbility(id, cooldown)
         return false
     end
 
-    return FinishAbilityExecution(self, id, execution, cooldown)
+    return FinishAbilityExecution(
+        self,
+        id,
+        execution,
+        cooldown
+    )
 end
 
 -- Optional alternative name.
@@ -242,6 +335,9 @@ function ENT:ActivateAbility(id)
     end
 
     self._AbilityCooldowns = self._AbilityCooldowns or {}
+    self._AbilityCooldownDurations =
+        self._AbilityCooldownDurations or {}
+
     self._AbilityExecuting = self._AbilityExecuting or {}
 
     local now = CurTime()
@@ -251,6 +347,7 @@ function ENT:ActivateAbility(id)
         return false
     end
 
+    -- Reject activation while on cooldown.
     if now < (self._AbilityCooldowns[id] or 0) then
         return false
     end
@@ -266,6 +363,16 @@ function ENT:ActivateAbility(id)
     }
 
     self._AbilityExecuting[id] = execution
+
+    -- Inform the HUD immediately that the ability is active.
+    -- Clear the old cooldown display while it is in use.
+    PublishAbilityHUDState(
+        self,
+        id,
+        true,
+        0,
+        0
+    )
 
     -- This callback can be saved and invoked later.
     -- It does not require the ability to return anything.
@@ -289,7 +396,12 @@ function ENT:ActivateAbility(id)
 
     if not ok then
         -- Avoid leaving a broken ability permanently active.
-        FinishAbilityExecution(self, id, execution, 0)
+        FinishAbilityExecution(
+            self,
+            id,
+            execution,
+            0
+        )
 
         ErrorNoHalt(
             "[Hitmen Abilities] "
@@ -325,6 +437,7 @@ function ENT:ActivateAbility(id)
     end
 
     local readyAt = self._AbilityCooldowns[id]
+
     local remainingCooldown = readyAt
         and math.max(readyAt - CurTime(), 0)
         or nil
@@ -334,6 +447,18 @@ end
 
 function ENT:CancelAbilities()
     self._AbilityExecuting = {}
+
+    -- Ensure the HUD no longer shows cancelled abilities
+    -- as active, while preserving any existing cooldown.
+    for id in pairs(self.Abilities or {}) do
+        PublishAbilityHUDState(
+            self,
+            id,
+            false,
+            (self._AbilityCooldowns or {})[id] or 0,
+            (self._AbilityCooldownDurations or {})[id] or 0
+        )
+    end
 
     for id, timerName in pairs(self._AbilityPassiveTimers or {}) do
         timer.Remove(timerName)
