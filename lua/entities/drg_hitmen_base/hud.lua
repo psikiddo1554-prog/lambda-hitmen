@@ -37,6 +37,11 @@ local ABILITY_ACTIVE_SCALE = 1.12
 local ABILITY_COOLDOWN_SCALE = 0.90
 local ABILITY_TRANSITION_SPEED = 12
 
+-- Plays once when an ability finishes its cooldown.
+-- Replace this with a custom path such as "lambda-hitmen/ability_ready.wav"
+-- if you add that file under your addon's sound/ folder.
+local ABILITY_READY_SOUND = "ability_ready.wav"
+
 local COLOR_ABILITY_COOLDOWN = Color(175, 110, 20, 255)
 local COLOR_COOLDOWN_FILL = Color(175, 110, 20, 135)
 local COLOR_ABILITY_BACKGROUND = Color(45, 51, 62, 230)
@@ -356,9 +361,13 @@ local function GetAbilityVisualState(hitman, id)
 
             backgroundAlpha = COLOR_ABILITY_BACKGROUND.a,
             cooldownFill = 0,
-			
-			glyphAlpha = 255,
-			glyphAngle = 0
+
+            -- Cooldown sound tracking (prevents repeated playback each frame).
+            wasCooldownTimerRunning = false,
+            pendingReadySound = false,
+
+            glyphAlpha = 255,
+            glyphAngle = 0
         }
     end
 
@@ -409,9 +418,33 @@ local function DrawAbilityIcon(hitman, entry, centerX, baseY)
 
     local now = CurTime()
 
-    local onCooldown = not active
-        and cooldownEnd > now
+    -- Track the cooldown timer independently of the active visual state.
+    -- If the timer finishes while the ability is still active, queue the
+    -- sound until it is no longer active and can actually be used again.
+    local cooldownTimerRunning = cooldownEnd > now
         and cooldownDuration > 0
+
+    if state.wasCooldownTimerRunning and not cooldownTimerRunning then
+        state.pendingReadySound = true
+    end
+
+    state.wasCooldownTimerRunning = cooldownTimerRunning
+
+    if state.pendingReadySound and not active then
+        EmitSound(
+			ABILITY_READY_SOUND,
+			vector_origin,
+			-2,
+			CHAN_AUTO,
+			0.75,
+			75,
+			0,
+			100
+		)
+        state.pendingReadySound = false
+    end
+
+    local onCooldown = not active and cooldownTimerRunning
 
     -- Cooldown progress fills from bottom to top.
     local cooldownProgress = 0

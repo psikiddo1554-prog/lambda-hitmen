@@ -6,6 +6,16 @@ ENT.PrintName = "TEST"
 ENT.Category = "Hitmen"
 ENT.Spawnable = true
 
+ENT.WalkSpeed = 165
+ENT.RunSpeed = 335
+ENT.PowerSpeed = 400
+
+ENT.PMeterBuildRate = 95
+ENT.PMeterDecayRate = 95
+ENT.TurnResistance = 0.45
+
+ENT.PowerRunAnimRate = 1.15
+
 ENT.Abilities = {
     Swing = {
         mouse = "LEFT",
@@ -38,7 +48,7 @@ ENT.Abilities = {
 
 					damage = 20,
 					damageType = DMG_SLASH,
-					force = 800,
+					force = 2200,
 					
 					onHit = function(owner, target, hitbox, damageInfo)
 						target:EmitSound("pursuerswinghit.mp3", 75, 100, 1, CHAN_AUTO)
@@ -93,14 +103,32 @@ ENT.Abilities = {
 
 					damage = 20,
 					damageType = DMG_SLASH,
-					force = 800,
+					force = 3300,
 					
 					onHit = function(owner, target, hitbox, damageInfo)
 						target:EmitSound("pursuercleavehit.wav", 75, 100, 1, CHAN_AUTO)
 						ParticleEffect("blood_impact_backscatter", target:WorldSpaceCenter(), Angle(0, 0, 0))
+						LambdaHitmen.ApplyKnockback(owner, target, 600, 150, nil, 1.0, 0.75)
 						HitmenEffects.Apply(target, "bleeding", {
 							duration = 6
 						})
+					end
+				})
+				
+				self:CreateHitboxSequence({
+					sequenceDuration = 0.1,
+					
+					followOwner = false,
+
+					offset = Vector(35, 0, 40),
+					mins = Vector(0, -10, -40),
+					maxs = Vector(50, 10, 30),
+
+					damage = 20,
+					damageType = DMG_SLASH,
+					force = 3300,
+					
+					onHit = function(owner, target, hitbox, damageInfo)
 					end
 				})
 			end)
@@ -122,7 +150,7 @@ ENT.Abilities = {
 			
 			timer.Simple(2.5, function()
 				if not self:IsValid() then return end
-				finishAbility(11)
+				finishAbility(2)
 			end)
         end
     }
