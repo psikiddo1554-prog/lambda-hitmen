@@ -160,6 +160,52 @@ local function SendHitboxVisual(hitbox, creating)
     net.Broadcast()
 end
 
+-- Supports:
+-- ignore = someEntity
+--
+-- or:
+-- ignore = {
+--     entity1,
+--     entity2,
+--     entity3
+-- }
+local function IsEntityIgnored(ignoreList, target)
+    if not ignoreList then
+        return false
+    end
+
+    -- Single entity
+    if IsValid(ignoreList) then
+        return ignoreList == target
+    end
+
+    if not istable(ignoreList) then
+        return false
+    end
+
+    -- Table used as a lookup set:
+    -- {
+    --     [entity1] = true,
+    --     [entity2] = true
+    -- }
+    if ignoreList[target] then
+        return true
+    end
+
+    -- Normal array:
+    -- {
+    --     entity1,
+    --     entity2
+    -- }
+    for _, ignored in ipairs(ignoreList) do
+        if ignored == target then
+            return true
+        end
+    end
+
+    return false
+end
+
 function Hitbox:IsActive()
     return self.active == true
 end
@@ -242,14 +288,14 @@ function Hitbox:ShouldHit(target)
         return false
     end
 
-    if istable(self.filter) then
-        if self.filter[target] then return false end
+    -- Existing filter support
+    if IsEntityIgnored(self.filter, target) then
+        return false
+    end
 
-        for _, excluded in ipairs(self.filter) do
-            if excluded == target then
-                return false
-            end
-        end
+    -- New ignore support
+    if IsEntityIgnored(self.ignore, target) then
+        return false
     end
 
     if isfunction(self.shouldHit) then
@@ -348,11 +394,13 @@ function Hitbox:Intersects(target)
 end
 
 function Hitbox:ApplyTo(target)
-	if not IsValid(target) or target == self.owner then
-		return
-	end
-	
-    if not self:ShouldHit(target) then return end
+    if not IsValid(target) or target == self.owner then
+        return
+    end
+
+    if not self:ShouldHit(target) then
+        return
+    end
 
     if self.hitOnce and self.hitTargets[target] then
         return
@@ -553,7 +601,13 @@ function ENT:CreateHitbox(settings)
         attacker = settings.attacker or self,
         inflictor = settings.inflictor or self,
         force = settings.force,
+
+        -- Existing filter
         filter = settings.filter,
+
+        -- New optional entity ignore list
+        ignore = settings.ignore,
+
         shouldHit = settings.shouldHit,
         hitOnce = settings.hitOnce ~= false,
         hitTargets = {},

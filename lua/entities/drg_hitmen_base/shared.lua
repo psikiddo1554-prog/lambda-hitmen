@@ -51,6 +51,7 @@ if SERVER then
 	AddCSLuaFile("abilities.lua")
 	AddCSLuaFile("hitbox.lua")
 	AddCSLuaFile("hud.lua")
+	AddCSLuaFile("drag.lua")
 end
 
 include("movement.lua")
@@ -58,6 +59,7 @@ include("possession.lua")
 include("abilities.lua")
 include("hitbox.lua")
 include("hud.lua")
+include("drag.lua")
 
 if SERVER then
     function ENT:CustomInitialize()
